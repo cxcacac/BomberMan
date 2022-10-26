@@ -235,12 +235,18 @@ class Map:
     def assign_reserve_step_choice(self, loc):
         logging.info("agent已经把下一步计划位置[%d, %d]传给了map"%(loc[0], loc[1]))
         self.runaway_values_table = [[0]*self.mapCols for _ in range(self.mapRows)] 
+
+        boomable_box_cnt = 0
         for i in range(self.mapRows):
             for j in range(self.mapCols):
+                if self.judge_loc_has_boomable_box([i,j]):
+                    boomable_box_cnt += 1
                 self.runaway_values_table[i][j] = self.__runaway_value([i,j])
         
+        # 不过如果当前已经没有任何得分的空间了，那么就不要强行去给趋势，被炸了得不偿失，还可能丢了第一名
         # 给下一步的方向一个比较小的趋势分，尽量不影响大局，只是有相同价值选择的时候，尽量选择下一步规划好的方向
-        self.runaway_values_table[loc[0]][loc[1]] += 10
+        if len(self.all_magic_boxes) > 0 or boomable_box_cnt > 0:
+            self.runaway_values_table[loc[0]][loc[1]] += 10
 
     # 一个位置在逃跑的价值    
     def __runaway_value(self, loc):
