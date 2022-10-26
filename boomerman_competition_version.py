@@ -31,8 +31,8 @@ ALL_DIRECTION_CHOICES = [0,1,2,3,4]
 MOVES_DIRECTIONS_ARRAY = [MOVEDIRECTION.RIGHT, MOVEDIRECTION.LEFT, MOVEDIRECTION.TOP, MOVEDIRECTION.DOWN, MOVEDIRECTION.STOP, MOVEDIRECTION.ERROR]
 RELEASE_BOOM_GAP = 9  # (可调)不能太少，因为可能不够撤离距离，影响吃分效率，同时可能会把自己堵死，必须要在7-9中间
 PRINT_CURRENT_STATUS = False
-BONUS_NPC_LEN_GAP = 10 # (可调)不能太小，如果对方智能体会躲避，而盲目地纠缠会错过了得分的时机；不能太大，因为可能到了分就被其它智能体吃了，路径规划是滞后的，大概在5-10左右
-BONUS_BOOMABLE_LEN_GAP = 3 # (可调)就近处理刚炸完的箱子出来的元素，越大越容易先吃bonus，而不是先炸箱子
+BONUS_NPC_LEN_GAP = 15 # (可调)不能太小，如果对方智能体会躲避，而盲目地纠缠会错过了得分的时机；
+BONUS_BOOMABLE_LEN_GAP = 5 # (可调)就近处理刚炸完的箱子出来的元素，越大越优先吃而不是优先炸
 START_ATTACK_MAGICBOX_THRESHOLD = 1  # (不变)如果仅剩1个magic_box，那么就有都来吃这个分陷入僵局的可能，那么就可以开启堵门的攻击模式，防止进入僵局
 RELEASE_BOOM_NPC_DISTANCE = 2  # (不变)在最后进攻的时候，相隔两个就可以放炸弹了，有堵门的可能，同时防止靠得太近，被1换1，这样也会安全一点，放炸弹也比较多
 INFINITY_POSITIVE_VALUE = 100000000  # (不变)
@@ -510,6 +510,9 @@ class Map:
                         continue
                     if self.maplist[next_x][next_y][0] == '0':
                         continue
+                    # 如果路径上有其它npc
+                    if self.judge_loc_has_other_npc([next_x, next_y]) and (next_x != dst[0] or next_y != dst[1]):
+                        continue
                     next_node = BFSNode([next_x, next_y], cur_node, j)
                     # 如果已经遍历过
                     if next_node.loc_flat in visited:
@@ -525,7 +528,7 @@ class Map:
                         return heading_direction, len(all_path)
                     queue.append(next_node)
                     visited.append(next_node.loc_flat)
-        return -1,-1
+        return -1,INFINITY_POSITIVE_VALUE
 
    # 返回固定距离范围内是否有NPC
     def bfs_judge_fixed_distance_has_npc_around(self, src, distance):
@@ -674,9 +677,13 @@ class Agent:
             self.m_map.control_npc_release_boom_zones.append(boom.loc_flat)
         
         move_choice, release_boom_choice = self.score_attack_run_decision()
-
+        
+        # fail_safe
+        if move_choice == MOVEDIRECTION.ERROR:
+            move_choice = MOVES_DIRECTIONS_ARRAY[self.m_map.next_best_runaway_direction(self.m_map.control_npc.loc)]
+            
         # 没有放炸弹，要统计步数
-        if release_boom_choice == RELEASEBOOM.FALSE:
+        if release_boom_choice == RELEASEBOOM.FALSE or self.m_map.judge_loc_has_other_npc(self.m_map.control_npc.loc):
             self.not_release_boom_cnt += 1
             if self.not_release_boom_cnt == RELEASE_BOOM_GAP:
                 logging.warning("%d步没有放炸弹了,必须要尝试放一个炸弹"%(self.not_release_boom_cnt))
@@ -696,14 +703,11 @@ class Agent:
             self.control_npc_release_booms[i].exist_time += 1
             if self.control_npc_release_booms[i].exist_time > 3:
                 clear_idx.append(i)
-            
         for idx in clear_idx:
             logging.info("炸弹已失效,位置:[%d,%d]，请检查!"%(self.control_npc_release_booms[idx].loc_row,
                                             self.control_npc_release_booms[idx].loc_col))
             self.control_npc_release_booms.pop(idx)
-            
-        logging.info("此时控制npc在场上共有%d个自己放的炸弹以及对应的爆炸区域"%(len(self.control_npc_release_booms)))
-        
+    
         logging.info("控制npc当前信息:位置[%d,%d],分数:[%d]"%(self.m_map.control_npc.loc_row, 
                                                             self.m_map.control_npc.loc_col, 
                                                             self.m_map.control_npc.score))
@@ -725,6 +729,11 @@ class Agent:
             logging.info("附近有npc,调整路线,并准备放炸弹...")
             return self.try_release_boom_and_run_away()
         
+        # 比较激进的得分策略，比较看运气
+        if self.m_map.judge_adjacent_has_boomable_box(control_npc_place):
+            logging.info("前进路上有可炸障碍物,调整路线,并准备放炸弹...")
+            return self.try_release_boom_and_run_away()
+        
         # 如果先判断危险区，在跑路，那么可能一直都不放炸弹，然后被扣分，被换
         if self.m_map.judge_loc_in_danger(control_npc_place):
             logging.info("在危险区中,往安全处走...")
@@ -736,10 +745,6 @@ class Agent:
             eat_bonus_move_choice = self.m_map.best_run_away_direction(control_npc_place,avaiable_bonus_choices)
             logging.info("四周有盒子奖励, 先吃盒子...")
             return MOVES_DIRECTIONS_ARRAY[eat_bonus_move_choice], RELEASEBOOM.FALSE   
-                
-        if self.m_map.judge_adjacent_has_boomable_box(control_npc_place):
-            logging.info("前进路上有可炸障碍物,调整路线,并准备放炸弹...")
-            return self.try_release_boom_and_run_away()
         
         # 如果现在地图上，magicbox很少，可能会有都吃一个分进入僵局，那么设置START_ATTACK_MAGICBOX_THRESHOLD，
         # 以转为进攻模式，需要由RELEASE_BOOM_NPC_DISTANCE决定开始放炸弹的距离
