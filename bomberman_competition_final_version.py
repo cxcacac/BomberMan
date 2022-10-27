@@ -18,7 +18,7 @@ logging.basicConfig(format='%(asctime)s,%(msecs)d %(levelname)-8s [%(filename)s:
     level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 coloredlogs.install(level='DEBUG')
-define("port", default=19105, help="run on the given port", type=int)
+define("port", default=57491, help="run on the given port", type=int)
 
 direction_tuple = namedtuple('MOVEDIRECTION', ['TOP', 'DOWN', 'LEFT', 'RIGHT', 'STOP', 'ERROR'])
 release_tuple = namedtuple('RELEASEBOOM', ['TRUE', 'FALSE'])
@@ -29,10 +29,10 @@ HASH_INT = 1000000
 MOVES = [[0,1],[0,-1],[-1,0],[1,0],[0,0]]  # 不是以坐标系作为判断，而是以行列坐标作为判断
 ALL_DIRECTION_CHOICES = [0,1,2,3,4]
 MOVES_DIRECTIONS_ARRAY = [MOVEDIRECTION.RIGHT, MOVEDIRECTION.LEFT, MOVEDIRECTION.TOP, MOVEDIRECTION.DOWN, MOVEDIRECTION.STOP, MOVEDIRECTION.ERROR]
-RELEASE_BOOM_GAP = 8  # (可调)不能太少，因为可能不够撤离距离，影响吃分效率，同时可能会把自己堵死，必须要在7-9中间
+RELEASE_BOOM_GAP = 9  # (可调)不能太少，因为可能不够撤离距离，影响吃分效率，同时可能会把自己堵死，必须要在7-9中间
 PRINT_CURRENT_STATUS = False
 BONUS_NPC_LEN_GAP = 15 # (可调)不能太小，如果对方智能体会躲避，而盲目地纠缠会错过了得分的时机；
-BONUS_BOOMABLE_LEN_GAP = 5 # (可调)就近处理刚炸完的箱子出来的元素，越大越优先吃而不是优先炸
+BONUS_BOOMABLE_LEN_GAP = 4 # (可调)就近处理刚炸完的箱子出来的元素，越大越优先吃而不是优先炸
 START_ATTACK_MAGICBOX_THRESHOLD = 1  # (不变)如果仅剩1个magic_box，那么就有都来吃这个分陷入僵局的可能，那么就可以开启堵门的攻击模式，防止进入僵局
 RELEASE_BOOM_NPC_DISTANCE = 2  # (不变)在最后进攻的时候，相隔两个就可以放炸弹了，有堵门的可能，同时防止靠得太近，被1换1，这样也会安全一点，放炸弹也比较多
 INFINITY_POSITIVE_VALUE = 100000000  # (不变)
@@ -236,18 +236,14 @@ class Map:
         logging.info("agent已经把下一步计划位置[%d, %d]传给了map"%(loc[0], loc[1]))
         self.runaway_values_table = [[0]*self.mapCols for _ in range(self.mapRows)] 
 
-        boomable_box_cnt = 0
         for i in range(self.mapRows):
             for j in range(self.mapCols):
-                if self.judge_loc_has_boomable_box([i,j]):
-                    boomable_box_cnt += 1
                 self.runaway_values_table[i][j] = self.__runaway_value([i,j])
         
         # 给下一步的方向一个比较小的趋势分，尽量不影响大局，只是有相同价值选择的时候，尽量选择下一步规划好的方向
-        # 这个趋势，只有还有积分可以加，而且附近没有npc的时候，才要给，否则会有被炸得风险。
-        if len(self.all_magic_boxes) > 0 or boomable_box_cnt > 0:
-            if not self.judge_loc_has_npc_around(loc):
-                self.runaway_values_table[loc[0]][loc[1]] += 10
+        # 这个趋势，只有附近没有npc的时候，才要给，否则会有被炸得风险。
+        if not self.judge_loc_has_npc_around(loc):
+            self.runaway_values_table[loc[0]][loc[1]] += 10
 
     # 一个位置在逃跑的价值    
     def __runaway_value(self, loc):
@@ -257,7 +253,7 @@ class Map:
             cur_value -= 300
         # 如果本地能不动，那就尽量不动
         if self.judge_loc_has_control_npc(loc):
-            cur_value += 15
+            cur_value += 30
         # 如果只是不能去或者能去
         if self.judge_loc_accessible(loc):
             cur_value += 100
@@ -271,7 +267,7 @@ class Map:
             cur_value -= 50
         # 如果在其他人放的炸弹的最中心，需要尽快逃出来，不要高于有npc的方向，因为可能会连续被炸
         if self.judge_loc_in_boom_zones(loc):
-            cur_value -= 20
+            cur_value -= 10
         # 由于npc所在的位置本来就是danger_zone，有其他路可以走的时候不会走这个，但是不能走的时候，走npc那也没啥问题，权重不能太大
         if self.judge_loc_has_other_npc(loc):
             cur_value -= 20 
@@ -448,10 +444,19 @@ class Map:
         for i in range(4):
             adj_x = loc[0] + MOVES[i][0]
             adj_y = loc[1] + MOVES[i][1]
-            if self.judge_loc_has_boomable_box([adj_x, adj_y]):
+            # 如果箱子附近没有炸弹，才放炸弹
+            if self.judge_loc_has_boomable_box([adj_x, adj_y]) and not self.judge_adjacent_has_booms([adj_x, adj_y]):
                 return True
         return False
     
+    def judge_adjacent_has_booms(self, loc):
+        for i in range(4):
+            adj_x = loc[0] + MOVES[i][0]
+            adj_y = loc[1] + MOVES[i][1]
+            if self.judge_loc_in_boom_zones([adj_x, adj_y]):
+                return True
+        return False
+        
     # 评估附近有权益
     def judge_adjacent_has_bonus_magicbox(self, loc):
         return (len(self.adjacent_bonus_directions(loc)) > 0)
@@ -589,6 +594,9 @@ class Map:
                     # 最短路径上不能包含其它npc，否则这个路径规划基本没什么用，去了也是被先吃掉
                     if self.judge_loc_has_other_npc([next_x, next_y]):
                         continue
+                    # 附近也不能包含npc，否则没有意义
+                    if self.judge_loc_has_npc_around([next_x, next_y]):
+                        continue
                     next_node = BFSNode([next_x, next_y], cur_node, j)
                     if next_node.loc_flat in visited:
                         continue
@@ -678,10 +686,6 @@ class Agent:
             self.m_map.control_npc_release_boom_zones.append(boom.loc_flat)
         
         move_choice, release_boom_choice = self.score_attack_run_decision()
-        
-        # fail_safe
-        if move_choice == MOVEDIRECTION.ERROR:
-            move_choice = MOVES_DIRECTIONS_ARRAY[self.m_map.next_best_runaway_direction(self.m_map.control_npc.loc)]
             
         # 没有放炸弹，要统计步数
         if release_boom_choice == RELEASEBOOM.FALSE or self.m_map.judge_loc_has_other_npc(self.m_map.control_npc.loc):
@@ -714,6 +718,8 @@ class Agent:
                                                             self.m_map.control_npc.score))
         if PRINT_CURRENT_STATUS:
             self.m_map.print_current_status()
+            
+        logging.info("最终决策:%s,%s"%(move_choice, release_boom_choice))
         return move_choice, release_boom_choice
     
     # 得分-攻击-逃跑策略
@@ -797,6 +803,9 @@ class Agent:
         if self.m_map.judge_loc_has_unboomable_obstacles([loc[0] + MOVES[heading_direction][0], 
                                                           loc[1] + MOVES[heading_direction][1]]):
             logging.error("寻路算法有问题,下一步是不可移动障碍物!")
+            
+        if heading_direction == -1:
+            heading_direction = self.m_map.next_best_runaway_direction(self.m_map.control_npc.loc)
         
         return heading_direction
 
